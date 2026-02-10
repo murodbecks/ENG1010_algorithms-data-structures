@@ -1,0 +1,61 @@
+import os
+
+from utils import generate_drone_locations, measure_method, save_benchmark_results
+from algorithm import find_closest_pair_brute_force, find_k_closest_pair_brute_force
+
+benchmark_folder = "files/"
+os.makedirs(benchmark_folder, exist_ok=True)
+
+benchmark_file = os.path.join(benchmark_folder, "benchmark.jsonl")
+
+width = 10_000
+
+print(f"Starting brute-force top-1")
+for num_locations in [1_000, 10_000, 25_000]: #, 100_000, 1_000_000, 10_000_000]:
+    for dimension in [2, 3]:
+        df = generate_drone_locations(num_locations, dimension, width)
+        columns = ['x', 'y'] if dimension == 2 else ['x', 'y', 'z']
+        k = 1
+
+        time_taken, memory_usage, success = measure_method(find_closest_pair_brute_force, df, columns)
+        stats = {
+            "algorithm": "brute-force",
+            "num_locations": num_locations,
+            "k": k,
+            "width": width,
+            "dimension": dimension,
+            "time_taken_ms": time_taken * 1000,
+            "memory_usage_kb": memory_usage / 1024
+        }
+        save_benchmark_results(stats, benchmark_file)
+
+print("\nStarting brute-force top-k")
+for num_locations in [1_000, 10_000, 25_000]: #, 100_000, 1_000_000, 10_000_000]:
+    for dimension in [2, 3]:
+        for k in [2, 10, 100]:
+            df = generate_drone_locations(num_locations, dimension, width)
+            columns = ['x', 'y'] if dimension == 2 else ['x', 'y', 'z']
+            
+            time_taken, memory_usage, success = measure_method(find_k_closest_pair_brute_force, k, df, columns)
+            stats = {
+                "algorithm": "brute-force",
+                "num_locations": num_locations,
+                "k": k,
+                "width": width,
+                "dimension": dimension,
+                "time_taken_ms": time_taken * 1000,
+                "memory_usage_kb": memory_usage / 1024
+            }
+            save_benchmark_results(stats, benchmark_file)
+
+
+print("\nStarting optimized search top-1")
+for num_locations in [1_000, 10_000, 25_000, 100_000, 1_000_000, 10_000_000]:
+    for dimension in [2, 3]:
+        pass
+
+print("\nStarting optimized search top-k")
+for num_locations in [1_000, 10_000, 25_000, 100_000, 1_000_000, 10_000_000]:
+    for dimension in [2, 3]:
+        for k in [2, 10, 100]:
+            pass

@@ -1,3 +1,10 @@
+labs/*
+
+# assignment1 datasets
+**/*/data/*.csv
+
+assignment1/playground.ipynb
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
