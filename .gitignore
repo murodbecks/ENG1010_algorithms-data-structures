@@ -1,4 +1,8 @@
-labs/*
+.DS_Store
+
+**/*/.DS_Store
+
+labs/*.txt
 
 # assignment1 datasets
 **/*/data/*.csv
