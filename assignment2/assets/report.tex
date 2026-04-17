@@ -1,0 +1,289 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{enumitem}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=black,
+  urlcolor=blue,
+  citecolor=black
+}
+
+\title{ENG1010 Individual Assignment 2 Report\\Botir}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Introduction}
+This report documents the bot \texttt{Botir} for the Tron Snake Arena assignment. The final implementation is contained in \texttt{bots/Botir.py}. The bot was designed as a heuristic search agent that evaluates a small set of legal actions each turn, simulates their immediate consequences, estimates the quality of the resulting position, and returns the highest-scoring action.
+
+During development, I used the provided public evaluator \texttt{evaluate.sh} and an additional local proxy evaluator \texttt{secret\_evaluate.sh} to reduce overfitting to only the known public maps. The strongest verified public result obtained for the final bot was:
+\begin{itemize}[leftmargin=*]
+    \item Solo: \(8.00 / 10.00\)
+    \item Duel: \(28.00 / 30.00\)
+    \item Battle Royale: \(12.25 / 15.00\)
+    \item Total: \(48.25 / 55.00\)
+\end{itemize}
+
+\section{Algorithm}
+\subsection{Overview}
+The bot uses a one-turn action search with state evaluation. At each game tick, it generates all feasible commands from the current state:
+\begin{itemize}[leftmargin=*]
+    \item normal movement: \texttt{N}, \texttt{S}, \texttt{E}, \texttt{W}
+    \item boost: \texttt{+}
+    \item phase: \texttt{P}, if charges remain
+    \item EMP prefix: \texttt{X}, applied only after a movement command has been selected
+\end{itemize}
+
+Each candidate action is simulated locally. The simulation records:
+\begin{itemize}[leftmargin=*]
+    \item the destination cell
+    \item the cells that become blocked by the bot's new trail
+    \item the cells traversed by boost or phase
+    \item the immediate item gain
+    \item whether the action is a boost or phase action
+\end{itemize}
+
+After simulation, the bot assigns a numeric score to each candidate and selects the highest-scoring one.
+
+\subsection{Candidate evaluation}
+The evaluation function combines several signals.
+
+\paragraph{1. Reachable-space analysis.}
+For each candidate, the bot runs a shortest-path expansion from the candidate destination while treating the new trail as blocked. Conceptually, the board is treated as a weighted graph: normal safe cells have cost \(1\), while timed walls that are expected to open soon are assigned a larger planning cost. Because of these weighted edges, I used Dijkstra-style expansion with a priority queue (\texttt{heapq}) rather than a standard unweighted BFS. This produces:
+\begin{itemize}[leftmargin=*]
+    \item \textbf{area}: number of reachable cells
+    \item \textbf{density}: weighted sum of nearby item value
+    \item \textbf{reachable value}: total collectible value in the reachable region
+    \item \textbf{nearest item}: distance and value of the closest collectible
+    \item \textbf{opportunity}: value of items that Botir can likely reach before opponents
+\end{itemize}
+
+\paragraph{2. Threat analysis.}
+The bot builds a threat map from opponent positions, likely forward moves, nearby EMP danger, and local head-to-head collision risk. Actions that move into high-threat cells or cells close to opponents are penalized.
+
+\paragraph{3. Voronoi-style territory control in duels.}
+In close 1v1 situations, the bot also uses a Voronoi-style territory approximation. Starting from Botir's candidate destination and the opponent's current position, it expands both regions and estimates how many cells are likely to belong to each side. This gives a lightweight approximation of future space control without performing a deep adversarial search. I apply this only in limited duel situations because earlier broad use of this signal caused regressions.
+
+\paragraph{4. Action-specific checks.}
+Boost and phase are not always good. Therefore the bot adds safety checks such as:
+\begin{itemize}[leftmargin=*]
+    \item exit count after the move
+    \item whether boost seals the bot into a dead end
+    \item whether phase actually increases reachable space enough to justify spending a charge
+\end{itemize}
+
+\paragraph{5. Guided solo planning.}
+On solo maps, the bot uses map-family-specific guidance:
+\begin{itemize}[leftmargin=*]
+    \item \texttt{s\_floodfill*}: choose a target using distance, item value, and nearby collectible clustering
+    \item \texttt{s\_path*} and \texttt{s\_choice*}: use a deeper route search that prefers item sequences which preserve future path length instead of only greedily taking the nearest reward
+\end{itemize}
+
+\subsection{Public-map and hidden-map generalization}
+One of the main design goals was to avoid depending only on hardcoded map names. The final bot still uses the guaranteed \texttt{s\_} prefix for solo map handling, because the brief explicitly guarantees this naming pattern for hidden solo maps. However, outside solo mode, the bot additionally analyzes board topology and adjusts weights from structural properties:
+\begin{itemize}[leftmargin=*]
+    \item \textbf{openness ratio}: fraction of non-wall cells
+    \item \textbf{corridor density}: fraction of cells with at most two walkable neighbors
+    \item \textbf{diamond centrality}: whether diamonds are concentrated near the center
+\end{itemize}
+
+This allows the bot to distinguish between open maps, choke-heavy maps, and central-objective maps even when the map is previously unseen.
+
+\subsection{EMP usage}
+EMP is decided after the movement command is chosen. The bot uses EMP conservatively:
+\begin{itemize}[leftmargin=*]
+    \item never in solo mode
+    \item only when at least one opponent is inside EMP radius
+    \item avoid spending EMP if the bot itself is already trapped in a very small region
+    \item prefer EMP in close duel situations or when multiple opponents are nearby in battle royale
+\end{itemize}
+
+\subsection{Why this algorithm is suitable}
+The game is simultaneous, adversarial, and time-limited. A full multi-turn minimax search is not realistic under the \(0.5\) second warning threshold. The selected approach is therefore a pragmatic compromise:
+\begin{itemize}[leftmargin=*]
+    \item simulate only one action ahead exactly
+    \item use stronger heuristic evaluation of the resulting state
+    \item keep the branching factor small
+    \item use cached, bounded-lookahead guidance only where it helps most
+\end{itemize}
+
+\section{Complexity Analysis}
+\subsection{Notation}
+Let:
+\begin{itemize}[leftmargin=*]
+    \item \(R\) be the number of rows
+    \item \(C\) be the number of columns
+    \item \(V = RC\) be the number of cells on the board
+    \item \(k\) be the number of alive opponents, where \(k \le 3\)
+\end{itemize}
+
+The brief guarantees \(R, C \le 50\), so \(V \le 2500\).
+
+\subsection{Per-turn time complexity}
+\paragraph{Candidate generation.}
+The bot generates at most:
+\begin{itemize}[leftmargin=*]
+    \item four directional actions
+    \item one boost action
+    \item one phase action
+\end{itemize}
+Therefore the number of candidates is bounded by a constant, at most \(6\).
+
+\paragraph{Distance expansion.}
+The core primitive is \texttt{\_distance\_map()}, implemented with a priority queue because timed walls use weighted planning costs. Its time complexity is:
+\[
+O(V \log V)
+\]
+in the worst case.
+
+\paragraph{PvP and battle royale turn cost.}
+For a non-solo turn, the bot performs:
+\begin{itemize}[leftmargin=*]
+    \item one threat-map construction
+    \item one distance map for each alive opponent: \(k\) times
+    \item one distance map per candidate: constant many times
+    \item one scan of each returned region to compute area, density, and opportunity
+\end{itemize}
+
+Since both the number of candidates and the number of opponents are bounded by constants, the asymptotic per-turn complexity is:
+\[
+O(V \log V)
+\]
+with a moderate constant factor.
+
+\paragraph{Comparison with deeper search.}
+This heuristic design was chosen deliberately. A deeper adversarial search such as minimax to depth \(d\) would have complexity on the order of
+\[
+O(b^d \cdot V \log V)
+\]
+where \(b\) is the action branching factor. In this game, even a small branching factor becomes expensive very quickly because each node would still require pathfinding and safety evaluation on a board of up to \(2500\) cells. Under the assignment's \(0.5\) second warning threshold, this would be much less reliable than a bounded one-step search with a stronger heuristic evaluator.
+
+\paragraph{Solo route planner.}
+On \texttt{s\_path*} and \texttt{s\_choice*}, the bot performs a bounded recursive route search. In the implementation, the search depth and candidate limit are fixed constants:
+\begin{itemize}[leftmargin=*]
+    \item search depth = \(3\)
+    \item candidate limit = \(6\)
+\end{itemize}
+
+Because these are constants, the asymptotic complexity is still:
+\[
+O(V \log V)
+\]
+per turn, although the constant factor is larger than in PvP mode.
+
+\subsection{Space complexity}
+The main memory usage comes from:
+\begin{itemize}[leftmargin=*]
+    \item board-sized distance maps
+    \item parent maps for path reconstruction
+    \item opponent maps
+    \item small caches used inside the solo route planner
+\end{itemize}
+
+Each map is \(O(V)\), and only a constant number of such maps exist simultaneously. Therefore the per-turn auxiliary space complexity is:
+\[
+O(V)
+\]
+
+More concretely, the largest structures in memory at a turn are:
+\begin{itemize}[leftmargin=*]
+    \item one threat map: \(O(V)\)
+    \item up to \(k \le 3\) opponent distance maps: \(O(V)\) each
+    \item one candidate analysis map at a time: \(O(V)\)
+    \item occasional parent maps for path reconstruction: \(O(V)\)
+    \item bounded memo/path caches in solo mode whose entries are also board-sized but limited by fixed search depth and candidate limit
+\end{itemize}
+So the total memory remains linear in board size with a constant multiplier, which is well aligned with the assignment's practical memory limit.
+
+\subsection{Practical interpretation}
+In practice, the board size is small enough that the chosen algorithm comfortably fits within the assignment limits. The design deliberately avoids:
+\begin{itemize}[leftmargin=*]
+    \item unbounded deep search
+    \item full game-tree adversarial planning
+    \item storing long histories of entire board states
+\end{itemize}
+
+This keeps both time and memory usage predictable.
+
+\section{Observations}
+\subsection{Where the bot performs well}
+\paragraph{1. Duel maps with spatial control.}
+The bot performs strongly in duel mode, especially on maps where safe-space estimation and threat avoidance matter more than exact long-horizon tactical traps. This is consistent with the final public duel score of \(28.00/30.00\). The main reason is that the bot's evaluation balances:
+\begin{itemize}[leftmargin=*]
+    \item reachable territory
+    \item item opportunity relative to the opponent
+    \item local head-to-head danger
+    \item action-specific safety
+\end{itemize}
+
+\paragraph{2. Battle royale maps after topology tuning.}
+The final improvement from \(47.25\) to \(48.25\) total came mainly from battle royale, increasing BR from \(11.25/15.00\) to \(12.25/15.00\). The main useful change was topology-aware weight selection. This helped the bot generalize better across:
+\begin{itemize}[leftmargin=*]
+    \item open maps where area control matters most
+    \item choke maps where over-aggressive item chasing is dangerous
+    \item central-objective maps where contested diamonds matter more
+\end{itemize}
+
+\paragraph{3. Hidden-style PvP proxy maps.}
+The local hidden proxy score also improved after the generalization changes. This suggests that topology analysis was useful beyond the exact public map list.
+
+\subsection{Where the bot is suboptimal}
+\paragraph{1. Long deterministic solo path variants.}
+The bot is still weak on some hidden-style solo maps, especially \texttt{s\_path\_4} and \texttt{s\_choice\_3}. The reason is that even with the improved route search, the planner is still heuristic and bounded. In the implementation, the solo route search is intentionally capped to depth \(3\) with a candidate limit of \(6\). This keeps the turn cost safe, but it also means the bot cannot perfectly foresee long one-lane consequences many steps ahead. On these maps, a small early mistake can reduce total survivable path length substantially.
+
+\paragraph{2. Some treasure-style asymmetries.}
+The bot is weaker on certain treasure scenarios, especially from less favorable starting positions. The likely reason is that these situations require a better model of when to sacrifice short-term safety to contest a high-value central route earlier.
+
+\paragraph{3. Multi-agent late-game compression.}
+Although BR improved, the bot still has limitations when several opponents compress the board late in the game. The current threat model is mostly local and short horizon. It does not explicitly reason about future region partitioning caused by multiple snakes at once.
+
+\paragraph{4. Opponent-style behaviour.}
+From the public evaluation, Botir handled most duel opponents well, but it was relatively more stressed by aggressive pressure situations, especially on open maps such as \texttt{orbit}. In these cases, the threat map and local safety checks are helpful against direct collisions, but the bot is still weaker at modelling the opponent's longer-term intention to squeeze territory rather than simply race for the same item.
+
+\subsection{Reason for these weaknesses}
+All remaining weaknesses come from the same core tradeoff: the bot is optimized for fast, safe, bounded decision-making. This makes it practical and strong overall, but it also means:
+\begin{itemize}[leftmargin=*]
+    \item no exact long-horizon search
+    \item no exact modelling of simultaneous opponent responses
+    \item no complete solution of every solo routing puzzle
+\end{itemize}
+
+In other words, the bot is intentionally heuristic rather than optimal.
+
+\section{Use of LLM Tools}
+LLM tools were used during the development process, and the corresponding logs are included in the submitted \texttt{ai\_logs/} folder as requested.
+
+\subsection{How LLMs were used}
+I used LLMs mainly as planning and engineering assistants, not as a direct source of final submitted text without review.
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Claude 4.6 Opus} and \textbf{Gemini 3 Pro} via \texttt{t3.chat}: used to discuss strategy ideas, diagnose weaknesses, and suggest improvement plans.
+    \item \textbf{Codex CLI}: used to inspect the codebase, implement candidate changes, run evaluations, compare results, and refine the bot iteratively.
+\end{itemize}
+
+\subsection{What was submitted}
+The \texttt{ai\_logs/} directory contains:
+\begin{itemize}[leftmargin=*]
+    \item Markdown logs converted from planning chats with Claude and Gemini
+    \item \texttt{.jsonl} session logs from Codex CLI copied from local session history
+\end{itemize}
+
+\subsection{My role in the final work}
+I decided which suggestions to keep or reject, reviewed the code changes, and accepted only those modifications that improved verified evaluation results. Several broader ideas were explicitly rejected because they caused regressions during testing. Therefore, the final bot is the result of iterative human-guided selection, testing, and refinement rather than blindly accepting model output.
+
+\section{Declaration}
+I declare that this submission reflects my own understanding and decision-making process. I used LLM tools as development assistants for brainstorming, debugging, implementation support, and documentation support, and I have disclosed that usage in this report and provided the corresponding chat logs in the submitted \texttt{ai\_logs/} folder. All final submitted work was reviewed by me, and I take responsibility for the contents of both the report and the code.
+
+\section{Conclusion}
+Botir is a heuristic search bot built around candidate simulation, reachable-space analysis, threat estimation, bounded solo planning, and topology-aware adaptation. This design achieved strong duel and battle-royale performance while remaining computationally efficient and reasonably robust to unseen maps. Its main limitation is that it still relies on bounded heuristics rather than exact long-horizon planning, which is most visible on some hidden-style solo routing maps.
+
+\end{document}
